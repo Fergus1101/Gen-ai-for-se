@@ -1,0 +1,268 @@
+ # Assignment #2: Online Learning Platform Backend Architecture
+
+## 1. System Overview
+
+The platform provides online courses, tests, user discussions, and video streaming. It integrates with external learning management systems such as Canvas and Moodle through the LTI standard. It also requires notifications, fine-grained role-based access control (RBAC), and durable storage for test results.
+
+The most important quality attributes are:
+
+- **Scalability (40%)**: absorb thousands of concurrent students during exam periods and deliver video efficiently.
+- **Security and compliance (30%)**: protect student records and test results, enforce student/instructor/admin privileges, and preserve LMS authentication integrity.
+- **Maintainability and extensibility (30%)**: allow independent changes to discussions, testing, video, and LMS connectors.
+
+## 2. Alternative A: Modular Monolith
+
+### Overview and technology choices
+
+Use one deployable backend organized into strict modules: Identity/RBAC, Courses, Testing, Discussions, LMS Integration, and Notifications. A REST API is exposed through an API gateway or reverse proxy. Use Java/Spring Boot, PostgreSQL for transactional course and test data, Redis for sessions and hot exam data, object storage such as Amazon S3 for video, and a CDN for delivery. A background job module publishes notifications through a queue such as RabbitMQ.
+
+This option is operationally simple and gives the team one deployment unit while preserving internal module boundaries.
+
+### C4 Container diagram
+
+```mermaid
+C4Container
+	title Modular Monolith - Online Learning Platform
+	Person(student, "Student", "Takes courses and tests")
+	Person(instructor, "Instructor", "Creates courses and grades work")
+	System_Ext(lms, "External LMS", "Canvas or Moodle via LTI")
+	System_Ext(cdn, "Video CDN", "Streams course video")
+	System_Boundary(platform, "Online Learning Platform") {
+		Container(web, "Web/Mobile Client", "Browser or mobile app", "Learning UI")
+		Container(api, "Modular Monolith API", "Spring Boot", "Identity, courses, tests, discussions, LMS, and notifications modules")
+		ContainerDb(db, "Platform Database", "PostgreSQL", "Users, courses, discussions, and test results")
+		Container(cache, "Cache", "Redis", "Sessions, rate limits, and frequently read exam data")
+		Container(store, "Video Object Storage", "S3-compatible storage", "Original and transcoded video")
+		Container(queue, "Job Queue", "RabbitMQ", "Asynchronous notification and media jobs")
+	}
+	Rel(student, web, "Uses")
+	Rel(instructor, web, "Uses")
+	Rel(web, api, "Calls HTTPS/JSON")
+	Rel(api, db, "Reads and writes")
+	Rel(api, cache, "Caches and rate limits")
+	Rel(api, store, "Stores video")
+	Rel(store, cdn, "Origin for video")
+	Rel(api, queue, "Publishes jobs")
+	Rel(api, lms, "LTI launch and grade sync")
+```
+
+### Trade-offs
+
+1. **Scalability**: API instances can scale horizontally and video is offloaded to object storage/CDN, but every module scales together. Exam traffic can therefore consume resources needed by discussions or course browsing.
+2. **Security**: A single deployment simplifies centralized authentication, authorization, audit logging, and database transactions. However, a vulnerability or authorization defect in one module has a larger blast radius.
+3. **Maintainability**: Clear module boundaries are easier to manage than an unstructured monolith, but independent release and scaling of the testing or LMS modules is limited.
+
+## 3. Alternative B: Microservices
+
+### Overview and technology choices
+
+Create independently deployable services for Identity/RBAC, Courses, Testing, Discussions, LMS Integration, Notifications, and Video Metadata. Use an API gateway, Kubernetes, and Java/Spring Boot or Go services. Use PostgreSQL per service where transactional data is required, with the Testing Service owning immutable test-result records. Use Kafka for domain events, Redis for caching, S3 plus a CDN for video, and a centralized audit/SIEM platform.
+
+This option maximizes independent scaling and deployment, at the cost of distributed-system complexity.
+
+### C4 Container diagram
+
+```mermaid
+C4Container
+	title Microservices - Online Learning Platform
+	Person(student, "Student", "Takes courses and tests")
+	Person(instructor, "Instructor", "Creates courses and grades work")
+	System_Ext(lms, "External LMS", "Canvas or Moodle via LTI")
+	System_Ext(cdn, "Video CDN", "Streams course video")
+	System_Boundary(platform, "Online Learning Platform") {
+		Container(web, "Web/Mobile Client", "Browser or mobile app", "Learning UI")
+		Container(gateway, "API Gateway", "Kong or cloud gateway", "Routing, throttling, and token validation")
+		Container(identity, "Identity Service", "OAuth2/OIDC", "RBAC and token management")
+		Container(course, "Course Service", "Spring Boot", "Courses and enrollments")
+		Container(test, "Testing Service", "Spring Boot", "Exam delivery, grading, and test results")
+		Container(discussion, "Discussion Service", "Go", "Threads and moderation")
+		Container(lmsAdapter, "LMS Integration Service", "Spring Boot", "LTI launches and grade sync")
+		Container(video, "Video Service", "Spring Boot", "Upload, transcode, and signed URLs")
+		Container(notify, "Notification Service", "Node.js", "Email and push notifications")
+		ContainerDb(testDb, "Testing Database", "PostgreSQL", "Test submissions and results")
+		ContainerDb(serviceDb, "Service Databases", "PostgreSQL", "Owned data for other services")
+		Container(events, "Event Bus", "Kafka", "Domain events")
+		Container(store, "Video Storage", "S3-compatible storage", "Video assets")
+	}
+	Rel(student, web, "Uses")
+	Rel(instructor, web, "Uses")
+	Rel(web, gateway, "Calls HTTPS/JSON")
+	Rel(gateway, identity, "Validates identity")
+	Rel(gateway, course, "Routes requests")
+	Rel(gateway, test, "Routes requests")
+	Rel(gateway, discussion, "Routes requests")
+	Rel(course, serviceDb, "Reads and writes")
+	Rel(test, testDb, "Reads and writes securely")
+	Rel(test, events, "Publishes result events")
+	Rel(events, notify, "Consumes notification events")
+	Rel(web, video, "Requests signed video URL")
+	Rel(video, store, "Stores and reads video")
+	Rel(store, cdn, "Origin for video")
+	Rel(lmsAdapter, lms, "Uses LTI")
+	Rel(course, lmsAdapter, "Requests enrollment sync")
+```
+
+### Trade-offs
+
+1. **Scalability**: Testing, video metadata, and other hot services scale independently, which is excellent for exam spikes. Kafka and Kubernetes add capacity and operational overhead.
+2. **Security**: Service-level authorization and separate data ownership reduce blast radius and support strong audit boundaries. More network calls, credentials, and service identities increase the attack surface.
+3. **Maintainability**: Teams can release modules independently and choose fit-for-purpose technologies. Distributed tracing, versioned contracts, retries, and eventual consistency make changes harder to reason about.
+
+## 4. Alternative C: Serverless/Event-Driven
+
+### Overview and technology choices
+
+Use a managed API gateway with serverless functions for course, testing, discussion, LMS, and notification commands. Use managed authentication with Cognito or Auth0, DynamoDB for high-volume test submissions, Aurora Serverless for relational data, SQS/EventBridge for events, and S3 plus CloudFront for video. Step Functions can coordinate grading and LMS synchronization workflows.
+
+This approach removes most server operations and automatically handles bursty demand, but introduces platform coupling and function-specific constraints.
+
+### C4 Container diagram
+
+```mermaid
+C4Container
+	title Serverless and Event-Driven - Online Learning Platform
+	Person(student, "Student", "Takes courses and tests")
+	Person(instructor, "Instructor", "Creates courses and grades work")
+	System_Ext(lms, "External LMS", "Canvas or Moodle via LTI")
+	System_Ext(cdn, "CloudFront CDN", "Streams course video")
+	System_Boundary(platform, "Online Learning Platform") {
+		Container(web, "Web/Mobile Client", "Browser or mobile app", "Learning UI")
+		Container(gateway, "API Gateway", "Managed gateway", "HTTPS routing and throttling")
+		Container(auth, "Managed Identity", "Cognito or Auth0", "OIDC authentication and RBAC claims")
+		Container(functions, "Domain Functions", "AWS Lambda", "Course, test, discussion, and LMS commands")
+		Container(workflows, "Workflow Orchestrator", "Step Functions", "Grading and LMS synchronization")
+		Container(events, "Event Router", "EventBridge and SQS", "Durable asynchronous events")
+		ContainerDb(testDb, "Test Data Store", "DynamoDB", "Submissions and test results")
+		ContainerDb(relational, "Relational Store", "Aurora Serverless", "Courses and enrollments")
+		Container(store, "Video Storage", "S3", "Video assets")
+		Container(notify, "Notification Provider", "Managed email/push service", "Student and instructor notifications")
+	}
+	Rel(student, web, "Uses")
+	Rel(instructor, web, "Uses")
+	Rel(web, gateway, "Calls HTTPS/JSON")
+	Rel(gateway, auth, "Authenticates")
+	Rel(gateway, functions, "Invokes")
+	Rel(functions, testDb, "Stores test results")
+	Rel(functions, relational, "Stores course data")
+	Rel(functions, events, "Publishes events")
+	Rel(events, workflows, "Starts workflows")
+	Rel(events, notify, "Triggers notifications")
+	Rel(functions, store, "Stores video")
+	Rel(store, cdn, "Origin for video")
+	Rel(workflows, lms, "Syncs through LTI")
+```
+
+### Trade-offs
+
+1. **Scalability**: Automatic function and database scaling handles sudden exam demand well, while the CDN handles video. Cold starts, concurrency quotas, and database hot partitions require careful load testing.
+2. **Security**: Managed identity, short-lived credentials, encryption, and private service integrations provide strong defaults. Misconfigured IAM policies or event permissions can be difficult to detect.
+3. **Maintainability**: Small functions and managed services reduce infrastructure maintenance. Long workflows, local testing, observability, vendor lock-in, and function coupling can reduce developer productivity.
+
+## 5. Alternative D: Hybrid Service-Based Architecture
+
+### Overview and technology choices
+
+Use a modular core service for Courses, Enrollment, and shared platform operations. Split the high-risk or high-variance areas into independently deployable services: Identity/RBAC, Testing, Discussions, LMS Integration, Notifications, and Video. Use a managed API gateway, Kubernetes or a managed container platform, PostgreSQL for core and test-result data, Redis for exam-session state, Kafka or a managed queue for events, and S3 plus a CDN for video.
+
+The hybrid design concentrates transactional consistency in the core while allowing exam testing, LMS connectors, discussion traffic, and video processing to scale or deploy independently.
+
+### C4 Container diagram
+
+```mermaid
+C4Container
+	title Hybrid Service-Based - Online Learning Platform
+	Person(student, "Student", "Takes courses and tests")
+	Person(instructor, "Instructor", "Creates courses and grades work")
+	System_Ext(lms, "External LMS", "Canvas or Moodle via LTI")
+	System_Ext(cdn, "Video CDN", "Streams course video")
+	System_Boundary(platform, "Online Learning Platform") {
+		Container(web, "Web/Mobile Client", "Browser or mobile app", "Learning UI")
+		Container(gateway, "API Gateway", "Managed gateway", "Routing, throttling, and WAF")
+		Container(identity, "Identity and RBAC Service", "OAuth2/OIDC", "Authentication, authorization, and audit claims")
+		Container(core, "Core Learning Service", "Spring Boot modular service", "Courses, enrollments, and shared APIs")
+		Container(test, "Testing Service", "Spring Boot", "Exam sessions, grading, and test results")
+		Container(discussion, "Discussion Service", "Containerized service", "Threads, moderation, and search")
+		Container(lmsAdapter, "LMS Connector Service", "Containerized service", "Versioned Canvas/Moodle LTI adapters")
+		Container(video, "Video Processing Service", "Containerized workers", "Transcoding and signed playback URLs")
+		Container(notify, "Notification Service", "Containerized worker", "Email and push delivery")
+		ContainerDb(coreDb, "Core Database", "PostgreSQL", "Courses and enrollments")
+		ContainerDb(testDb, "Testing Database", "PostgreSQL", "Encrypted test results and submissions")
+		Container(cache, "Exam Cache", "Redis", "Sessions, rate limits, and temporary answers")
+		Container(bus, "Event Bus", "Kafka or managed queue", "Integration and notification events")
+		Container(store, "Video Storage", "S3-compatible storage", "Video assets")
+	}
+	Rel(student, web, "Uses")
+	Rel(instructor, web, "Uses")
+	Rel(web, gateway, "Calls HTTPS/JSON")
+	Rel(gateway, identity, "Validates tokens")
+	Rel(gateway, core, "Routes core requests")
+	Rel(gateway, test, "Routes exam requests")
+	Rel(gateway, discussion, "Routes discussion requests")
+	Rel(core, coreDb, "Reads and writes")
+	Rel(test, testDb, "Reads and writes securely")
+	Rel(test, cache, "Stores exam session state")
+	Rel(core, bus, "Publishes domain events")
+	Rel(test, bus, "Publishes result events")
+	Rel(bus, notify, "Triggers notifications")
+	Rel(core, lmsAdapter, "Requests enrollment and grade sync")
+	Rel(lmsAdapter, lms, "Uses LTI")
+	Rel(web, video, "Requests signed playback URL")
+	Rel(video, store, "Reads and writes video")
+	Rel(store, cdn, "Origin for video")
+```
+
+### Trade-offs
+
+1. **Scalability**: The Testing Service and Video Processing Service can scale separately during exam and media peaks. The shared core remains a possible bottleneck, so its APIs and database need load testing and read replicas.
+2. **Security**: Central RBAC plus service-specific authorization and isolated test-result storage provide strong control. The architecture must prevent privilege escalation across the core, connectors, and event bus.
+3. **Maintainability**: The stable core avoids premature fragmentation while independently deployable services support LMS connector and testing changes. Teams still need API contracts, observability, and deployment automation.
+
+## 6. Score Matrix
+
+Scores are from 0 to 10. Weighted score is calculated as:
+
+`(Scalability x 0.40) + (Security and Compliance x 0.30) + (Maintainability and Extensibility x 0.30)`
+
+| Alternative | Scalability (40%) | Security and Compliance (30%) | Maintainability and Extensibility (30%) | Weighted total |
+|---|---:|---:|---:|---:|
+| Modular Monolith | 7 | 8 | 8 | `(7 x 0.40) + (8 x 0.30) + (8 x 0.30) = 2.80 + 2.40 + 2.40 = 7.60` |
+| Microservices | 9 | 8 | 7 | `(9 x 0.40) + (8 x 0.30) + (7 x 0.30) = 3.60 + 2.40 + 2.10 = 8.10` |
+| Serverless/Event-Driven | 9 | 7 | 7 | `(9 x 0.40) + (7 x 0.30) + (7 x 0.30) = 3.60 + 2.10 + 2.10 = 7.80` |
+| Hybrid Service-Based | 9 | 9 | 9 | `(9 x 0.40) + (9 x 0.30) + (9 x 0.30) = 3.60 + 2.70 + 2.70 = 9.00` |
+
+### Winner
+
+The **Hybrid Service-Based Architecture** wins with a weighted score of **9.00/10**. It meets the exam-spike requirement through independently scalable testing and video services, provides stronger isolation for test data and RBAC-sensitive operations, and preserves maintainability by keeping core course transactions together instead of fragmenting every feature into a service.
+
+## 7. ADR-001: Online Learning Platform Backend Architecture
+
+**Status:** Proposed  
+**Date:** 2026-10-06  
+**Deciders:** Architecture Team
+
+### Context
+
+The online learning platform must support courses, tests, discussions, video streaming, notifications, LTI integration with systems such as Canvas and Moodle, and persistent test results. Peak exam periods may create demand from thousands of concurrent students, so the backend must scale without degrading exam delivery or video playback. The system must enforce fine-grained RBAC between students, instructors, and administrators. Student records, submissions, and results must be protected in storage and transit. The design must also permit independent evolution of the testing engine, discussion forums, LMS connectors, and course modules.
+
+### Decision
+
+Adopt the **Hybrid Service-Based Architecture**. Keep course and enrollment transactions in a modular Core Learning Service, and deploy Identity/RBAC, Testing, Discussions, LMS Connectors, Notifications, and Video Processing as independently scalable services where their operational needs differ. Use an API gateway with WAF and throttling, OAuth2/OIDC with centralized RBAC, PostgreSQL with encrypted test-result storage, Redis for exam-session state, an event bus for asynchronous work, and object storage plus a CDN for video.
+
+This design scored 9.00/10: 9 for scalability, 9 for security and compliance, and 9 for maintainability and extensibility. It provides most of the isolation benefits of microservices without forcing every low-volume capability into its own distributed service.
+
+### Alternatives Considered
+
+| Option | Pros | Cons |
+|---|---|---|
+| Modular Monolith | Lowest operational complexity, simple transactions, centralized security | Shared scaling and deployment; larger failure blast radius |
+| Microservices | Strong independent scaling and deployment; clear data ownership | Highest operational complexity; distributed consistency and observability challenges |
+| Serverless/Event-Driven | Excellent burst scaling and low infrastructure management | Vendor coupling, IAM complexity, cold starts, and harder local debugging |
+| Hybrid Service-Based | Balances scalability, isolation, transaction simplicity, and team maintainability | Requires disciplined service contracts, monitoring, and platform automation |
+
+### Consequences
+
+**Benefits:** Testing can scale during exam spikes without scaling every feature. Video delivery is moved to object storage and a CDN. Test results can have a dedicated encrypted database and stricter access policy. LMS connectors can be updated independently, and asynchronous events reduce coupling between notifications, grading, and course operations.
+
+**Costs and risks:** The platform now includes multiple deployable services, so it needs centralized logging, distributed tracing, contract testing, API versioning, secrets management, and reliable deployment automation. Cross-service workflows may be eventually consistent. A shared core database and API can still become bottlenecks and must be protected with rate limiting, caching, replicas, and load testing.
+
+**Follow-up controls:** Conduct load tests that model exam submission bursts, perform threat modeling for RBAC and LTI flows, encrypt sensitive data at rest and in transit, maintain immutable audit logs, and define recovery time and recovery point objectives before production launch.

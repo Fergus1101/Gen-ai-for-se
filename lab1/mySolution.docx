@@ -1,0 +1,300 @@
+AI Transcript:
+Prompt:
+I would like you to create a SQL database for a book collection - I have attatched the data dictionary book_collection_dd.txt. I would like you to generate a small API in Python, that supports creating, reading, and
+updating records. I don't think we will need to install sql as the sqlite3 module should work
+out of the box. For example, you might have books_api.py containing functions like add_author. I would then like you to to write a client script that calls your API (e.g., imports books_api.py) to perform some
+example writes and reads.
+To recap, I want you to produce:
+SQL schema
+Python API file (books_api.py)
+Python client script (client.py)
+
+For now please follow the data dictionary fields exactly.
+You can make assumptions on what API functions should be included.
+
+Stop and ask me if you have any questions
+
+Answer:
+The implementation is complete, but the first validation hit an environment issue: python is not installed or not on PATH on this Windows machine. I’ll check for the Windows py launcher and use it if available, then run a syntax check and the client.
+
+Prompt:
+Apologies, I forgot to install Python on this machine. What would be the simplest way to do this?
+The simplest option is winget, which is available on your machine.
+Run this in PowerShell:
+winget install --id Python.Python.3.13 -e --source winget
+Accept the prompts, then close and reopen VS Code. Verify the installation:
+py --version
+python –version
+After that, run the example client with:
+py client.py
+
+Prompt:
+Does our database appear to be working based off of this output:
+PS C:\Users\fergu\FourthYear\Gen-ai-for-se> py client.py
+Author: {'Author_id': 1, 'Name': 'Ursula K. Le Guin'}
+Book: {'Book_id': 1, 'Title': 'A Wizard of Earthsea', 'Author_id': 1, 'Year': 1968, 'Rating': 5, 'Read_it_or_not': 1}
+All authors: [{'Author_id': 1, 'Name': 'Ursula K. Le Guin'}]
+All books: [{'Book_id': 1, 'Title': 'A Wizard of Earthsea', 'Author_id': 1, 'Year': 1968, 'Rating': 5, 'Read_it_or_not': 0}]
+
+Answer:
+Yes, the database and API are working. The output confirms that:
+•	An author was created and read successfully.
+•	A book was created and read successfully.
+•	Both records can be listed.
+•	The book update also worked: its Read_it_or_not value changed from 1 to 0.
+The values 1 and 0 represent SQLite booleans: 1 means true/read, and 0 means false/not read.
+
+Prompt:
+The last step of my assignment is "Write a line or two to call the API to independently confirm the data is present." . Can you give me examples of lines I could use to call the API, so I can independantly verify
+
+Answer:
+You can independently verify the existing records by creating a separate file, for example verify.py:
+import books_api
+print(books_api.get_author(1))
+print(books_api.get_book(1))
+
+Expected output should include Ursula K. Le Guin and A Wizard of Earthsea.
+To verify all records instead:
+import books_api
+print(books_api.list_authors())
+print(books_api.list_books())
+
+Run it with:
+py verify.py
+
+You can also run the lines directly in
+PowerShell:
+py -c "import books_api; print(books_api.get_author(1)); print(books_api.get_book(1))"
+
+Use the actual Author_id and Book_id values shown in your database if they differ from 1.
+
+Prompt:
+When I try to open books.db I get the message "The file is not displayed in the text editor because it is either binary or uses an unsupported text encoding." Is there an extension I could install or some other way to get around this?
+
+Answer:
+That message is expected: books.db is a binary SQLite database, not a text file.
+The easiest option in VS Code is to install a SQLite viewer:
+1.	Open Extensions with Ctrl+Shift+X.
+2.	Search for SQLite Viewer.
+3.	Install a reputable extension, such as SQLite Viewer by qwtel.
+4.	Right-click books.db and choose Open With... → SQLite Viewer.
+You can also verify it through your Python API without installing anything:
+py -c "import books_api; print(books_api.list_authors()); print(books_api.list_books())"
+Do not edit books.db in the normal text editor. Use the SQLite viewer or the API to inspect and modify it.
+
+
+Here is evidence that the database is being populated (using an SQLite extension recommended by copilot) and see also the command calling the API. 
+
+
+Reflection:
+By doing this assignment, I got a good understanding of how generative AI can be used to help with software engineering. While I did have experience with this over work placement, this was a good refresher and also forced me to think more carefully about what prompts I gave Copilot. 
+I thought hard about the first prompt I ended up giving it, as this will often be the most important. I tried to stick as closely as possible to exactly what the task at hand was, to avoid ambiguity and getting unexpected results. However, Copilots first mistake was assuming that my machine already had Python installed. This could have been avoided by a simple py –version before implementation, as a human would probably think to do. I noticed that this was the issue when Copilot itself told me after it tried to run commands to verify the API was functioning.
+I can’t say that Copilot made any major assumptions that I hadn’t asked for. The only small thing was that I suggested the name “imports books_api.py” as the client script name but it went ahead and just called it “client.py”. This was fine in this scenario, but I could see this being a much bigger issue in larger code bases if files were being mislabelled, it would become a confusing mess.
+I didn’t have to rewrite or iterate any prompts in this situation, as Copilot seemed to handle this simple scenario well, but I did spend half of my placement rewriting prompts, so I am well used to it! 😊
+One thing I would not trust Copilot with is if this was a live database of importance, I would not let it query or write to it without manually checking every query, as I could definitely see it making mistakes, like writing inaccurate or deleting important information.
+Overall, this assignment was a good experience for getting in touch with generative AI again, and has got me thinking more literally about how exactly these agents work or understand context, and I look forward to more complex tasks where I get to see it’s shortcomings also.
+
+Code:
+Book_collection_dd.txt:
+Table: author
+* Author_id INTEGER
+* Name TEXT
+Table: book
+* Book_id INTEGER
+* Title TEXT
+* Author_id INTEGER
+* Year INTEGER
+* Rating INTEGER 1-5 rating
+* Read_it_or_not BOOLEAN 
+
+books_api.py:
+"""Small SQLite API for the book collection database."""
+
+from pathlib import Path
+import sqlite3
+from typing import Any, Dict, List, Optional
+
+DATABASE_PATH = Path(__file__).with_name("books.db")
+SCHEMA_PATH = Path(__file__).with_name("schema.sql")
+
+def _connect() -> sqlite3.Connection:
+    connection = sqlite3.connect(DATABASE_PATH)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA foreign_keys = ON")
+    return connection
+
+def init_db() -> None:
+    """Create the database tables if they do not already exist."""
+    with _connect() as connection:
+        connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+def add_author(name: str) -> int:
+    """Create an author and return the generated Author_id."""
+    if not name.strip():
+        raise ValueError("Name must not be empty")
+
+    with _connect() as connection:
+        cursor = connection.execute("INSERT INTO author (Name) VALUES (?)", (name,))
+        return int(cursor.lastrowid)
+
+def get_author(author_id: int) -> Optional[Dict[str, Any]]:
+    """Return one author by Author_id, or None when it does not exist."""
+    with _connect() as connection:
+        row = connection.execute(
+            "SELECT Author_id, Name FROM author WHERE Author_id = ?", (author_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+def list_authors() -> List[Dict[str, Any]]:
+    """Return all authors ordered by Author_id."""
+    with _connect() as connection:
+        rows = connection.execute(
+            "SELECT Author_id, Name FROM author ORDER BY Author_id"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+def update_author(author_id: int, name: str) -> bool:
+    """Update an author and return whether a record was changed."""
+    if not name.strip():
+        raise ValueError("Name must not be empty")
+
+    with _connect() as connection:
+        cursor = connection.execute(
+            "UPDATE author SET Name = ? WHERE Author_id = ?", (name, author_id)
+        )
+    return cursor.rowcount > 0
+
+def add_book(
+    title: str,
+    author_id: int,
+    year: Optional[int] = None,
+    rating: Optional[int] = None,
+    read_it_or_not: bool = False,
+) -> int:
+    """Create a book and return the generated Book_id."""
+    if not title.strip():
+        raise ValueError("Title must not be empty")
+    if rating is not None and rating not in range(1, 6):
+        raise ValueError("Rating must be between 1 and 5")
+
+    with _connect() as connection:
+        cursor = connection.execute(
+            """
+            INSERT INTO book (Title, Author_id, Year, Rating, Read_it_or_not)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (title, author_id, year, rating, int(read_it_or_not)),
+        )
+        return int(cursor.lastrowid)
+
+def get_book(book_id: int) -> Optional[Dict[str, Any]]:
+    """Return one book by Book_id, or None when it does not exist."""
+    with _connect() as connection:
+        row = connection.execute(
+            """
+            SELECT Book_id, Title, Author_id, Year, Rating, Read_it_or_not
+            FROM book WHERE Book_id = ?
+            """,
+            (book_id,),
+        ).fetchone()
+    return dict(row) if row else None
+
+def list_books() -> List[Dict[str, Any]]:
+    """Return all books ordered by Book_id."""
+    with _connect() as connection:
+        rows = connection.execute(
+            """
+            SELECT Book_id, Title, Author_id, Year, Rating, Read_it_or_not
+            FROM book ORDER BY Book_id
+            """
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+def update_book(
+    book_id: int,
+    title: str,
+    author_id: int,
+    year: Optional[int] = None,
+    rating: Optional[int] = None,
+    read_it_or_not: bool = False,
+) -> bool:
+    """Update a book and return whether a record was changed."""
+    if not title.strip():
+        raise ValueError("Title must not be empty")
+    if rating is not None and rating not in range(1, 6):
+        raise ValueError("Rating must be between 1 and 5")
+
+    with _connect() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE book
+            SET Title = ?, Author_id = ?, Year = ?, Rating = ?, Read_it_or_not = ?
+            WHERE Book_id = ?
+            """,
+            (title, author_id, year, rating, int(read_it_or_not), book_id),
+        )
+    return cursor.rowcount > 0
+client.py:
+"""Example client for books_api.py."""
+
+import books_api
+
+def main() -> None:
+    books_api.init_db()
+
+    author_id = books_api.add_author("Ursula K. Le Guin")
+    book_id = books_api.add_book(
+        title="A Wizard of Earthsea",
+        author_id=author_id,
+        year=1968,
+        rating=5,
+        read_it_or_not=True,
+    )
+
+    print("Author:", books_api.get_author(author_id))
+    print("Book:", books_api.get_book(book_id))
+
+    books_api.update_book(
+        book_id,
+        title="A Wizard of Earthsea",
+        author_id=author_id,
+        year=1968,
+        rating=5,
+        read_it_or_not=False,
+    )
+
+    print("All authors:", books_api.list_authors())
+    print("All books:", books_api.list_books())
+
+if __name__ == "__main__":
+    main()
+
+
+schema.sql:
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS author (
+    Author_id INTEGER PRIMARY KEY,
+    Name TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS book (
+    Book_id INTEGER PRIMARY KEY,
+    Title TEXT NOT NULL,
+    Author_id INTEGER NOT NULL,
+    Year INTEGER,
+    Rating INTEGER CHECK (Rating IS NULL OR Rating BETWEEN 1 AND 5),
+    Read_it_or_not BOOLEAN NOT NULL DEFAULT 0 CHECK (Read_it_or_not IN (0, 1)),
+    FOREIGN KEY (Author_id) REFERENCES author (Author_id)
+);
+
+
+
+
+
+
+
+
+
+
+
